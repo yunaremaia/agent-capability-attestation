@@ -193,9 +193,15 @@ def _parse_datetime(value) -> datetime:
 
 
 def _scope_is_subscope(parent: str, child: str) -> bool:
-    """Check if child capability is a subscope of parent capability."""
+    """Check if child capability is a subscope of parent capability.
+
+    Supports wildcards: "CAN_WRITE(store:*)" is a superset of "CAN_WRITE(store:partition_1)".
+    """
     if child == parent:
         return True
+    if parent.endswith(":*"):
+        prefix = parent[:-2]
+        return child.startswith(prefix + ":") or child == prefix
     if child.startswith(parent):
         return True
     parent_parts = set(parent.split(":"))

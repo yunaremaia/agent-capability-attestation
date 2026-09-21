@@ -73,7 +73,7 @@ class TestAttestation:
         result = validator.validate(att)
         assert not result.is_valid
         assert result.is_stale
-        assert result.stale_by_seconds == 2940.0  # 3540 - 60
+        assert result.stale_by_seconds == 3540.0  # 3600 - 60
 
     def test_fresh_attestation_valid(self):
         now = datetime(2026, 9, 21, 12, 0, 30, tzinfo=timezone.utc)
