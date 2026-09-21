@@ -195,14 +195,22 @@ def _parse_datetime(value) -> datetime:
 def _scope_is_subscope(parent: str, child: str) -> bool:
     """Check if child capability is a subscope of parent capability.
 
-    Supports wildcards: "CAN_WRITE(store:*)" matches "CAN_WRITE(store:partition_1)".
+    Supports wildcards: "store:*" matches any child starting with "store:".
     """
     if child == parent:
         return True
+    # Handle wildcard suffix
     if parent.endswith("*"):
-        return child.startswith(parent[:-1])
+        wildcard_prefix = parent[:-1]
+        return child.startswith(wildcard_prefix)
+    # Direct prefix match
     if child.startswith(parent):
         return True
-    parent_parts = set(parent.split(":"))
-    child_parts = set(child.split(":"))
+    # Check if child's scope is a subset of parent's
+    parent_scope = parent.split(":")[-1] if ":" in parent else parent
+    child_scope = child.split(":")[-1] if ":" in child else child
+    parent_parts = set(parent_scope.strip("()").split(","))
+    child_parts = set(child_scope.strip("()").split(","))
+    if parent_parts == {"*"}:
+        return True
     return child_parts.issubset(parent_parts)
