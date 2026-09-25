@@ -2,9 +2,9 @@
   "issuer": "agent://planner-v2",
   "subject": "agent://worker-v3",
   "capability": "CAN_WRITE(state_store:partition_3)",
-  "issued_at": "2026-09-23T18:34:16+00:00",
-  "expires_at": "2026-09-23T18:36:16+00:00",
-  "ttl_seconds": 120,
+  "issued_at": "2026-09-25T13:15:37+00:00",
+  "expires_at": "2026-09-25T14:15:37+00:00",
+  "ttl_seconds": 3600,
   "state_hash": "sha256:placeholder_hash_for_example",
   "provenance": ["agent://planner-v2"],
   "signature": null
