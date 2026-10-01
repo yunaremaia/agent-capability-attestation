@@ -68,7 +68,7 @@ echo $?
 ```yaml
 - name: Validate agent capability attestations
   run: |
-    pip install agent-capability-attestation
+    pip install git+https://github.com/yunaremaia/agent-capability-attestation.git
     aca scan ./agents/ --fail-on-stale
 ```
 
