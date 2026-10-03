@@ -162,13 +162,22 @@ class AttestationValidator:
         attestation: Attestation,
         public_key: ed25519.Ed25519PublicKey,
     ) -> bool:
-        """Verify the Ed25519 signature of an attestation."""
+        """Verify the Ed25519 signature of an attestation.
+
+        The signed payload is ``to_dict()`` with the ``signature`` key
+        removed, serialized with ``json.dumps``. ``exclude`` is not a
+        ``json.dumps`` argument, so the field has to be dropped from the
+        dict before serialization.
+        """
         if not attestation.signature:
             return False
+        body = {
+            key: value
+            for key, value in attestation.to_dict().items()
+            if key != "signature"
+        }
         try:
-            data = json.dumps(
-                attestation.to_dict(), exclude={"signature"}
-            ).encode()
+            data = json.dumps(body).encode()
             public_key.verify(
                 bytes.fromhex(attestation.signature), data
             )
