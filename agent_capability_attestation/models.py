@@ -38,6 +38,7 @@ class Attestation:
     def from_dict(cls, data: dict) -> "Attestation":
         """Parse from a JSON-serializable dictionary."""
         issued_at = _parse_datetime(data["issued_at"])
+        declared_expires_at = data.get("expires_at")
         return cls(
             issuer=data["issuer"],
             subject=data["subject"],
@@ -45,6 +46,9 @@ class Attestation:
             issued_at=issued_at,
             ttl_seconds=data.get("ttl_seconds", 0),
             state_hash=data.get("state_hash"),
+            expires_at=(
+                _parse_datetime(declared_expires_at) if declared_expires_at else None
+            ),
             provenance=data.get("provenance", []),
             signature=data.get("signature"),
         )
@@ -146,13 +150,29 @@ class AttestationValidator:
                 f"TTL {attestation.ttl_seconds}s exceeds max {self.max_ttl}s"
             )
 
+        # The declared expires_at is authoritative when present; the TTL-derived
+        # deadline is the fallback. Comparing now against the deadline (rather
+        # than against ttl_seconds) is what keeps an attestation that declares
+        # its own short expiry from being stretched by a long TTL.
+        deadline = attestation.expires_at
+        ttl_deadline = attestation.issued_at + timedelta(
+            seconds=attestation.ttl_seconds
+        )
+        if deadline != ttl_deadline:
+            result.add_warning(
+                f"expires_at {deadline.isoformat()} disagrees with "
+                f"issued_at + ttl_seconds ({ttl_deadline.isoformat()}); "
+                "honoring the declared expiry"
+            )
+
         age = (self.now - attestation.issued_at).total_seconds()
-        if age > attestation.ttl_seconds:
+        remaining = (deadline - self.now).total_seconds()
+        if remaining < 0:
             result.is_stale = True
-            result.stale_by_seconds = age - attestation.ttl_seconds
+            result.stale_by_seconds = -remaining
             result.add_error(
                 f"Attestation stale by {result.stale_by_seconds:.1f}s "
-                f"(issued {age:.1f}s ago, TTL {attestation.ttl_seconds}s)"
+                f"(issued {age:.1f}s ago, expires {deadline.isoformat()})"
             )
 
         return result
