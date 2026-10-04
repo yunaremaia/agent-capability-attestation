@@ -255,10 +255,14 @@ class AttestationValidator:
                 f"TTL {attestation.ttl_seconds}s exceeds max {self.max_ttl}s"
             )
 
-        # The declared expires_at is authoritative when present; the TTL-derived
-        # deadline is the fallback. Comparing now against the deadline (rather
-        # than against ttl_seconds) is what keeps an attestation that declares
-        # its own short expiry from being stretched by a long TTL.
+        # A declared expires_at may shorten an attestation's life but never
+        # extend it: when it is present and later than the TTL-derived deadline
+        # it is rejected below and the deadline is pulled back to that bound.
+        # The TTL-derived deadline is therefore the ceiling, and the derived
+        # value is the fallback when the field is absent. Comparing now against
+        # the deadline (rather than against ttl_seconds) is what keeps an
+        # attestation that declares its own short expiry from being stretched
+        # by a long TTL.
         #
         # Both sides are normalized to UTC first: an Attestation built directly
         # (bypassing _parse_datetime) can still carry a naive issued_at, and

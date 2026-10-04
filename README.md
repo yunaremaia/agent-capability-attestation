@@ -113,7 +113,7 @@ that derived deadline is the ceiling the `ttl_seconds` policy is measured agains
 A declared `expires_at` may **shorten** an attestation's life — an attestation that says it
 expired is honoured even when its TTL has not run out — but it may never **extend** it. A
 declared expiry later than `issued_at + ttl_seconds` is an internally inconsistent record,
-and it is resolved against the longer life:
+and it is resolved against the shorter life:
 
 ```console
 $ aca validate forged.attestation.json
