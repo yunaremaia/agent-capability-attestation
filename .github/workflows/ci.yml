@@ -29,4 +29,26 @@ jobs:
         run: |
           pip install click cryptography
           python -m agent_capability_attestation --version
-          python -m agent_capability_attestation validate examples/valid-attestation.json --json-output
+          # Generate a freshly-issued attestation so this smoke test does not
+          # depend on a committed timestamp staying valid forever.
+          python - <<'PY'
+          import datetime, json
+          issued = datetime.datetime.now(datetime.timezone.utc)
+          json.dump({
+              "issuer": "agent://planner-v2",
+              "subject": "agent://worker-v3",
+              "capability": "CAN_WRITE(state_store:partition_3)",
+              "issued_at": issued.isoformat(),
+              "ttl_seconds": 120,
+          }, open("/tmp/fresh.attestation.json", "w"))
+          PY
+          python -m agent_capability_attestation validate /tmp/fresh.attestation.json --json-output
+      - name: Smoke test rejects the future-dated example attestation
+        run: |
+          # examples/valid-attestation.json carries an issued_at in the future.
+          # It used to report VALID only because validate() had no clock-skew
+          # bound; it must now be rejected rather than silently trusted (#16).
+          if python -m agent_capability_attestation validate examples/valid-attestation.json; then
+            echo "::error::future-dated attestation was accepted"
+            exit 1
+          fi

@@ -12,6 +12,22 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
+# How far into the future an issued_at may sit and still be believable.
+#
+# A negative age (issued_at ahead of now) used to pass every check, which made
+# a future-dated attestation an unbounded-validity primitive: the deadline is
+# derived from issued_at, so shifting it forward keeps the attestation "fresh"
+# until the wall clock catches up — years, or forever.
+#
+# Zero tolerance would reject hosts whose clock legitimately runs a little fast,
+# so the bound is deliberately small but non-zero. Sixty seconds is roughly six
+# times the worst drift of an NTP-synced host (single-digit seconds; leap-second
+# and VM-snapshot effects are the outliers) and an order of magnitude below any
+# useful attack shift, while staying well under the smallest TTL this tool
+# considers meaningful. Deployments with known drift can widen it explicitly via
+# ``max_skew_seconds`` rather than by shipping a forged receipt.
+DEFAULT_MAX_SKEW_SECONDS = 60
+
 
 @dataclass
 class Attestation:
@@ -121,9 +137,11 @@ class AttestationValidator:
         self,
         max_ttl: int = 300,
         now: Optional[datetime] = None,
+        max_skew_seconds: int = DEFAULT_MAX_SKEW_SECONDS,
     ) -> None:
         self.max_ttl = max_ttl
         self._now = now
+        self.max_skew_seconds = max_skew_seconds
 
     @property
     def now(self) -> datetime:
@@ -161,6 +179,22 @@ class AttestationValidator:
         issued_at = _as_utc(attestation.issued_at)
         now = _as_utc(self.now)
         deadline = _as_utc(attestation.expires_at)
+
+        # An issued_at ahead of the validation clock is a forgery or replay
+        # signal, not a fresh attestation. Every other bound in this function is
+        # measured against issued_at, so shifting it forward is exactly what
+        # keeps an attestation alive: a deadline of now + 80 years never
+        # arrives. The bound is an explicit window rather than a hard zero so a
+        # host running a few seconds fast is not mistaken for an attacker.
+        age = (now - issued_at).total_seconds()
+        if age < -self.max_skew_seconds:
+            result.add_error(
+                f"Attestation issued {-age:.1f}s in the future "
+                f"(allowed skew {self.max_skew_seconds}s) — "
+                "forged or clock-skewed issued_at"
+            )
+            return result
+
         ttl_deadline = issued_at + timedelta(seconds=attestation.ttl_seconds)
         if deadline != ttl_deadline:
             result.add_warning(
@@ -169,7 +203,6 @@ class AttestationValidator:
                 "honoring the declared expiry"
             )
 
-        age = (now - issued_at).total_seconds()
         remaining = (deadline - now).total_seconds()
         if remaining < 0:
             result.is_stale = True

@@ -6,13 +6,19 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .models import Attestation, AttestationValidator, ValidationResult
+from .models import (
+    DEFAULT_MAX_SKEW_SECONDS,
+    Attestation,
+    AttestationValidator,
+    ValidationResult,
+)
 
 
 def check_mcp(
     config_path: str,
     max_ttl: int = 300,
     now: Any = None,
+    max_skew_seconds: int = DEFAULT_MAX_SKEW_SECONDS,
 ) -> list["ValidationResult"]:
     """Scan an MCP server configuration for capability attestations.
 
@@ -24,7 +30,9 @@ def check_mcp(
 
     data = json.loads(path.read_text())
     results = []
-    validator = AttestationValidator(max_ttl=max_ttl, now=now)
+    validator = AttestationValidator(
+        max_ttl=max_ttl, now=now, max_skew_seconds=max_skew_seconds
+    )
 
     # MCP configs can list servers under a "mcpServers" or similar key
     servers = data.get("mcpServers", data.get("servers", {}))

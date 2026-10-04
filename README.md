@@ -35,6 +35,9 @@ pip install git+https://github.com/yunaremaia/agent-capability-attestation.git
 # Validate a single attestation file
 aca validate attestation.json
 
+# Widen the accepted clock drift if issuer and validator clocks disagree
+aca validate attestation.json --max-skew-seconds 300
+
 # Scan a delegation chain directory
 aca scan ./delegation-chain/
 
@@ -44,6 +47,24 @@ aca check-mcp mcp-config.json --ttl-max-age 300
 # Exit code: 0 = all fresh, 1 = stale/drift detected
 echo $?
 ```
+
+## Clock Skew
+
+An `issued_at` ahead of the validation clock is treated as a forgery or replay signal, not
+as a fresh attestation. Because the expiry deadline is derived from `issued_at`, a shifted
+timestamp is what keeps an attestation alive indefinitely — so a future-dated one is
+rejected outright.
+
+Validators do not require a *perfect* clock. A small window absorbs legitimate drift:
+
+| | |
+|---|---|
+| Default tolerance | 60s (`DEFAULT_MAX_SKEW_SECONDS`) |
+| Widened | `AttestationValidator(max_skew_seconds=300)` |
+| Widened from the CLI | `--max-skew-seconds 300` |
+
+Widen the window explicitly when a deployment's clock is known to drift. Lowering it toward
+`0` is valid if every host is NTP-locked tightly.
 
 ## Attestation Schema
 

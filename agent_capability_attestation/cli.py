@@ -10,8 +10,20 @@ from typing import Optional
 import click
 
 from .mcp_scanner import check_mcp as scan_mcp_config
-from .models import Attestation, AttestationValidator, DelegationChain, ValidationResult
+from .models import (
+    DEFAULT_MAX_SKEW_SECONDS,
+    Attestation,
+    AttestationValidator,
+    DelegationChain,
+    ValidationResult,
+)
 from . import __version__
+
+SKEW_HELP = (
+    "Tolerance for clock drift between issuer and validator, in seconds. "
+    f"An issued_at further in the future than this is rejected as forged "
+    f"(default: {DEFAULT_MAX_SKEW_SECONDS})"
+)
 
 
 @click.group()
@@ -23,13 +35,23 @@ def cli() -> None:
 @cli.command()
 @click.argument("file", type=click.Path(exists=True))
 @click.option("--max-ttl", default=300, help="Maximum allowed TTL in seconds (default: 300)")
+@click.option(
+    "--max-skew-seconds",
+    default=DEFAULT_MAX_SKEW_SECONDS,
+    type=int,
+    help=SKEW_HELP,
+)
 @click.option("--json-output", "json_output", is_flag=True, help="Output as JSON")
-def validate(file: str, max_ttl: int, json_output: bool) -> None:
+def validate(
+    file: str, max_ttl: int, max_skew_seconds: int, json_output: bool
+) -> None:
     """Validate a single attestation file."""
     data = _load_json(file)
     attestation = Attestation.from_dict(data)
 
-    validator = AttestationValidator(max_ttl=max_ttl)
+    validator = AttestationValidator(
+        max_ttl=max_ttl, max_skew_seconds=max_skew_seconds
+    )
     result = validator.validate(attestation)
 
     if json_output:
@@ -43,9 +65,21 @@ def validate(file: str, max_ttl: int, json_output: bool) -> None:
 @cli.command()
 @click.argument("directory", type=click.Path(exists=True, file_okay=False))
 @click.option("--max-ttl", default=300, help="Maximum allowed TTL in seconds")
+@click.option(
+    "--max-skew-seconds",
+    default=DEFAULT_MAX_SKEW_SECONDS,
+    type=int,
+    help=SKEW_HELP,
+)
 @click.option("--fail-on-stale", is_flag=True, help="Exit 1 if any attestation is stale")
 @click.option("--json-output", "json_output", is_flag=True, help="Output as JSON")
-def scan(directory: str, max_ttl: int, fail_on_stale: bool, json_output: bool) -> None:
+def scan(
+    directory: str,
+    max_ttl: int,
+    max_skew_seconds: int,
+    fail_on_stale: bool,
+    json_output: bool,
+) -> None:
     """Scan a directory for attestation files and validate them all."""
     dir_path = Path(directory)
     attestation_files = sorted(dir_path.glob("**/*.attestation.json"))
@@ -57,7 +91,9 @@ def scan(directory: str, max_ttl: int, fail_on_stale: bool, json_output: bool) -
     results = []
     all_valid = True
 
-    validator = AttestationValidator(max_ttl=max_ttl)
+    validator = AttestationValidator(
+        max_ttl=max_ttl, max_skew_seconds=max_skew_seconds
+    )
 
     for f in attestation_files:
         try:
@@ -88,7 +124,13 @@ def scan(directory: str, max_ttl: int, fail_on_stale: bool, json_output: bool) -
 @cli.command()
 @click.argument("file", type=click.Path(exists=True))
 @click.option("--max-ttl", default=300, help="Maximum allowed TTL in seconds")
-def check_chain(file: str, max_ttl: int) -> None:
+@click.option(
+    "--max-skew-seconds",
+    default=DEFAULT_MAX_SKEW_SECONDS,
+    type=int,
+    help=SKEW_HELP,
+)
+def check_chain(file: str, max_ttl: int, max_skew_seconds: int) -> None:
     """Validate a delegation chain (array of attestations in order)."""
     data = _load_json(file)
 
@@ -98,7 +140,9 @@ def check_chain(file: str, max_ttl: int) -> None:
 
     attestations = [Attestation.from_dict(item) for item in data]
     chain = DelegationChain(attestations=attestations)
-    validator = AttestationValidator(max_ttl=max_ttl)
+    validator = AttestationValidator(
+        max_ttl=max_ttl, max_skew_seconds=max_skew_seconds
+    )
 
     results = chain.validate_monotonicity()
     all_valid = all(r.is_valid for r in results)
@@ -113,11 +157,21 @@ def check_chain(file: str, max_ttl: int) -> None:
 @cli.command()
 @click.argument("file", type=click.Path(exists=True))
 @click.option("--max-ttl", default=300, help="Maximum allowed TTL in seconds")
+@click.option(
+    "--max-skew-seconds",
+    default=DEFAULT_MAX_SKEW_SECONDS,
+    type=int,
+    help=SKEW_HELP,
+)
 @click.option("--json-output", "json_output", is_flag=True, help="Output as JSON")
-def check_mcp(file: str, max_ttl: int, json_output: bool) -> None:
+def check_mcp(
+    file: str, max_ttl: int, max_skew_seconds: int, json_output: bool
+) -> None:
     """Scan an MCP server configuration for capability attestations."""
     try:
-        results = scan_mcp_config(file, max_ttl=max_ttl)
+        results = scan_mcp_config(
+            file, max_ttl=max_ttl, max_skew_seconds=max_skew_seconds
+        )
     except FileNotFoundError as e:
         click.echo(f"ERROR: {e}", err=True)
         sys.exit(2)
