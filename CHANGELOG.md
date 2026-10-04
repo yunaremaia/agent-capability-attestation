@@ -50,6 +50,12 @@ All notable changes to this project will be documented in this file.
 - `verify_signature()` returned an uncaught `TypeError` for a non-string
   signature instead of `False`.
 
+- An empty result set is now a failure instead of a vacuous pass. `check-chain`
+  and `check-mcp` both reduce their verdict with `all(...)`, and `all([])` is
+  `True`, so `check-chain []` and `check-mcp {}` exited `0` having printed
+  nothing at all. A run that inspected nothing was indistinguishable from a
+  clean one. Both now report the empty set on stderr and exit `1`.
+
 - A future-dated `issued_at` is now rejected instead of validating forever. `validate()`
   computed a negative `age` for a timestamp ahead of the clock and had no branch for it,
   so an attestation dated 80 years in the future reported `is_valid=True`, `is_stale=False`
