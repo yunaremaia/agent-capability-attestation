@@ -9,7 +9,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Mapping, Optional
 
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
 #: The attestation's signature was verified against a trusted public key.
@@ -140,15 +139,42 @@ class DelegationChain:
     ) -> list[ValidationResult]:
         """Verify each hop narrows (never expands) the capability scope.
 
-        When a ``validator`` is supplied, its signature check is applied to
-        every hop as well. Scope monotonicity only compares capabilities
-        against each other, so on its own it cannot tell an honest narrowing
-        chain from one whose first hop was rewritten to claim admin rights:
-        a forged payload can be perfectly monotonic and still be a forgery.
+        When a ``validator`` is supplied, every hop is also run through
+        ``validator.validate()`` — the full single-attestation check covering
+        the TTL floor, the declared ``expires_at``, staleness, the
+        future-``issued_at`` skew bound and the signature — and its errors and
+        warnings are merged into the same per-hop result that carries the
+        monotonicity verdict.
+
+        Both checks are necessary and neither substitutes for the other. Scope
+        monotonicity only compares capabilities against each other, so on its
+        own it cannot tell an honest narrowing chain from one whose first hop
+        was rewritten to claim admin rights: a forged payload can be perfectly
+        monotonic and still be a forgery. Conversely, a per-attestation
+        validator only judges each hop in isolation and says nothing about
+        whether hop N widened what hop N-1 granted, so a chain can be entirely
+        fresh at every hop and still expand the authority as it descends.
+
+        Merging is what closes the fail-open this method used to have on the
+        time axis. It previously applied only ``check_signature``, so a chain
+        whose every hop had expired, was dated far in the future, or carried no
+        TTL at all still came back valid at every hop — the caller passed a
+        validator configured with ``max_ttl`` and ``max_skew_seconds`` and those
+        settings had no effect whatsoever.
+
+        Without a ``validator`` this stays a pure scope check, for callers that
+        want monotonicity alone.
         """
         results: list[ValidationResult] = []
         for i, att in enumerate(self.attestations):
-            result = ValidationResult(attestation=att, is_valid=True, is_stale=False)
+            if validator is None:
+                result = ValidationResult(attestation=att, is_valid=True, is_stale=False)
+            else:
+                # Seed from the full per-attestation verdict (it already runs
+                # check_signature), then layer the chain-level check on top.
+                # add_error() only ever clears is_valid, so the two verdicts
+                # combine rather than overwrite one another.
+                result = validator.validate(att)
             if i > 0:
                 parent = self.attestations[i - 1]
                 if not _scope_is_subscope(parent.capability, att.capability):
@@ -156,8 +182,6 @@ class DelegationChain:
                         f"Hop {i}: capability expanded — "
                         f"{parent.capability} → {att.capability}"
                     )
-            if validator is not None:
-                validator.check_signature(att, result)
             results.append(result)
         return results
 

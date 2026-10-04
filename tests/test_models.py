@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timedelta, timezone
-
-import pytest
+from datetime import datetime, timezone
 
 from agent_capability_attestation import __version__
 from agent_capability_attestation.models import (
     Attestation,
     AttestationValidator,
     DelegationChain,
-    ValidationResult,
     _scope_is_subscope,
     compute_state_hash,
 )

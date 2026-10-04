@@ -41,6 +41,9 @@ aca validate attestation.json --max-skew-seconds 300
 # Scan a delegation chain directory
 aca scan ./delegation-chain/
 
+# Validate a delegation chain file (array of attestations, in order)
+aca check-chain chain.json
+
 # Check MCP server capability attestations
 aca check-mcp mcp-config.json --max-ttl 300
 
@@ -50,6 +53,37 @@ aca validate attestation.json --public-key-file issuer-pubkey.hex
 # Exit code: 0 = all fresh, 1 = stale/drift detected
 echo $?
 ```
+
+## Delegation Chains
+
+`aca check-chain` takes a JSON array of attestations in delegation order and checks two
+independent things about each hop:
+
+1. **Scope monotonicity** — hop *N*'s capability must be a sub-scope of hop *N-1*'s. A hop
+   that widens what its parent granted is reported as `capability expanded`.
+2. **Freshness** — every hop is validated in full: TTL must be present and positive, the
+   declared `expires_at` must not have passed, and `issued_at` must not sit further into
+   the future than the skew tolerance allows.
+
+Both verdicts are merged into a single per-hop result, so a hop that is both expired and
+scope-expanding reports both errors rather than one masking the other:
+
+```console
+$ aca check-chain chain.json
+[Hop 0] ✗ STALE | agent://planner-v2 → agent://orchestrator | CAN_WRITE(store:*) (TTL 60s)
+    signature: UNSIGNED — NOT VERIFIED
+    stale by 2591940.1s
+    ERROR: Attestation stale by 2591940.1s (issued 2592000.1s ago, expires 2026-09-04T01:45:27+00:00)
+[Hop 1] ✗ STALE | agent://orchestrator → agent://worker | CAN_WRITE(store:partition_1) (TTL 60s)
+    signature: UNSIGNED — NOT VERIFIED
+    stale by 2591940.1s
+    ERROR: Attestation stale by 2591940.1s (issued 2592000.1s ago, expires 2026-09-04T01:45:27+00:00)
+$ echo $?
+1
+```
+
+`--max-ttl` and `--max-skew-seconds` apply to every hop, exactly as they do for `validate`
+and `scan`. A chain in which every hop is live and every hop narrows the scope exits `0`.
 
 ## Clock Skew
 

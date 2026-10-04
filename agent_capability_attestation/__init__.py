@@ -1,6 +1,6 @@
 """Agent Capability Attestation - Validate capability freshness in AI agent delegation chains."""
 
-from .models import (  # noqa: F401
+from .models import (
     ANY_ISSUER,
     DEFAULT_MAX_SKEW_SECONDS,
     SIGNATURE_UNCHECKED,

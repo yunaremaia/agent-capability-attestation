@@ -1,0 +1,29 @@
+# Ruff configuration for agent-capability-attestation.
+#
+# The lint gate is deliberately narrow: pyflakes (`F`) only. `F` catches the
+# class of defect that no runtime test reports on itself — a name that is used
+# but never imported, a binding that is redefined, an import that is left over
+# from a refactor. Before this gate the repo had no linter at all, which is how
+# `models.py` kept `from cryptography.hazmat.primitives import hashes,
+# serialization` and `tests/test_models.py` kept `json`, `pytest`, `timedelta`
+# and `ValidationResult` after the code that used them had gone.
+#
+# `tests/` is NOT excluded. The sibling repos that lint `src/` only make that
+# trade to protect tests from a noisy gate; it does not transfer here, because
+# three of the six findings this gate reports were in `tests/`, and a gate that
+# cannot see the tests cannot keep them honest.
+#
+# Style rules (E501, I001, UP, DTZ, SIM) are intentionally NOT enabled. Turning
+# them on means a wide reformat that is hard to review, and a noisy first gate
+# gets disabled rather than fixed. Widen the selection deliberately, with the
+# reformat in its own commit.
+
+target-version = "py39"  # matches python_requires=">=3.9" in setup.py
+line-length = 100
+
+[lint]
+# Pinned explicitly so the gate cannot redden on a ruff upgrade that ships a
+# different default rule set. See the note above about widening deliberately.
+select = [
+    "F",  # pyflakes
+]
