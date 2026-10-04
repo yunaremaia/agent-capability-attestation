@@ -190,6 +190,9 @@ def check_chain(
     )
 
     results = chain.validate_monotonicity(validator=validator)
+    if not results:
+        click.echo("ERROR: delegation chain is empty — nothing to validate", err=True)
+        sys.exit(1)
     all_valid = all(r.is_valid for r in results)
 
     for i, result in enumerate(results):
@@ -242,6 +245,9 @@ def check_mcp(
         for result in results:
             _print_result(result)
 
+    if not results:
+        click.echo("ERROR: no servers found in MCP config — nothing to validate", err=True)
+        sys.exit(1)
     all_valid = all(r.is_valid for r in results)
     if not all_valid:
         sys.exit(1)
