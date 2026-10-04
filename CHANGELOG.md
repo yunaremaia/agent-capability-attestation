@@ -39,6 +39,13 @@ All notable changes to this project will be documented in this file.
   and CLI exit `0` — and, because the deadline is derived from `issued_at`, could not expire
   until the wall clock caught up. Rejected beyond the skew window with
   `Attestation issued <n>s in the future (allowed skew 60s)`.
+- `verify_signature()` no longer raises `TypeError` for a `signature` value that is not a
+  string. `bytes.fromhex()` raises `TypeError` — not `ValueError` — for a JSON number,
+  array or object, so the previous `except (InvalidSignature, ValueError)` let
+  attacker-controlled input escape as an uncaught exception instead of returning `False`.
+  It also accepts the algorithm-prefixed `"ed25519:<hex>"` form documented by the README's
+  Attestation Schema, which `bytes.fromhex` rejected with `ValueError` — so every
+  signature written in the project's own documented wire format failed verification.
 
 ## [Initial Release]
 

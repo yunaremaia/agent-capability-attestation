@@ -78,6 +78,60 @@ class TestVerifySignature:
         ) is False
 
     @pytest.mark.parametrize(
+        "bad_signature",
+        [12345, 1.5, ["ab"], {"sig": "ab"}, True],
+        ids=["int", "float", "list", "dict", "bool"],
+    )
+    def test_non_string_signature_returns_false_not_exception(self, bad_signature):
+        """A signature value that is not a string must be rejected, not raise.
+
+        The signature is read from a file the attacker can edit, and
+        ``bytes.fromhex`` raises ``TypeError`` — not ``ValueError`` — for a
+        non-string, so the guard above, which catches only
+        ``(InvalidSignature, ValueError)``, let a JSON number, array or object
+        escape as an uncaught ``TypeError``. The malformed-hex test next door
+        exercises the string arm only, which is why this arm stayed uncovered.
+        """
+        private_key = ed25519.Ed25519PrivateKey.generate()
+        attestation = _make_attestation()
+        attestation.signature = bad_signature
+
+        assert AttestationValidator().verify_signature(
+            attestation, private_key.public_key()
+        ) is False
+
+    def test_documented_ed25519_prefixed_signature_verifies(self):
+        """README's Attestation Schema documents ``"ed25519:<hex>"``.
+
+        A signature in the form the project's own schema advertises must
+        verify; ``bytes.fromhex("ed25519:...")`` used to raise ``ValueError``
+        (unprefixed) and return ``False``, so every attestation produced per
+        the documented wire format failed verification.
+        """
+        private_key = ed25519.Ed25519PrivateKey.generate()
+        attestation = _make_attestation()
+        attestation.signature = (
+            "ed25519:" + private_key.sign(_signed_body(attestation)).hex()
+        )
+
+        assert AttestationValidator().verify_signature(
+            attestation, private_key.public_key()
+        ) is True
+
+    def test_prefixed_signature_from_wrong_key_is_still_rejected(self):
+        """Control arm: stripping the prefix must not turn the check into a pass."""
+        private_key = ed25519.Ed25519PrivateKey.generate()
+        other_key = ed25519.Ed25519PrivateKey.generate()
+        attestation = _make_attestation()
+        attestation.signature = (
+            "ed25519:" + other_key.sign(_signed_body(attestation)).hex()
+        )
+
+        assert AttestationValidator().verify_signature(
+            attestation, private_key.public_key()
+        ) is False
+
+    @pytest.mark.parametrize(
         "optional_field",
         ["state_hash", "provenance"],
     )
