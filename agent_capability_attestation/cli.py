@@ -9,7 +9,7 @@ from typing import Optional
 
 import click
 
-from .mcp_scanner import check_mcp
+from .mcp_scanner import check_mcp as scan_mcp_config
 from .models import Attestation, AttestationValidator, DelegationChain, ValidationResult
 from . import __version__
 
@@ -117,7 +117,7 @@ def check_chain(file: str, max_ttl: int) -> None:
 def check_mcp(file: str, max_ttl: int, json_output: bool) -> None:
     """Scan an MCP server configuration for capability attestations."""
     try:
-        results = check_mcp(file, max_ttl=max_ttl)
+        results = scan_mcp_config(file, max_ttl=max_ttl)
     except FileNotFoundError as e:
         click.echo(f"ERROR: {e}", err=True)
         sys.exit(2)
