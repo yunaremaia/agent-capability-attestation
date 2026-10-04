@@ -102,8 +102,9 @@ class TestAttestation:
         validator = AttestationValidator(max_ttl=300, now=now)
         result = validator.validate(att)
         assert result.is_valid
-        assert len(result.warnings) == 1
-        assert "exceeds max" in result.warnings[0]
+        # Asserted by content, not by count or position: an unsigned
+        # attestation also warns that its signature was not verified.
+        assert any("exceeds max" in w for w in result.warnings)
 
 
 class TestDelegationChain:

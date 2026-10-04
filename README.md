@@ -42,7 +42,10 @@ aca validate attestation.json --max-skew-seconds 300
 aca scan ./delegation-chain/
 
 # Check MCP server capability attestations
-aca check-mcp mcp-config.json --ttl-max-age 300
+aca check-mcp mcp-config.json --max-ttl 300
+
+# Verify the issuer's Ed25519 signature
+aca validate attestation.json --public-key-file issuer-pubkey.hex
 
 # Exit code: 0 = all fresh, 1 = stale/drift detected
 echo $?
@@ -65,6 +68,52 @@ Validators do not require a *perfect* clock. A small window absorbs legitimate d
 
 Widen the window explicitly when a deployment's clock is known to drift. Lowering it toward
 `0` is valid if every host is NTP-locked tightly.
+
+## Signature Verification
+
+An attestation's `signature` is an Ed25519 signature over the whole payload (every field
+except `signature` itself). **Validation enforces it.** Swapping the capability, subject,
+TTL or tool schema after signing makes validation fail:
+
+```console
+$ aca validate attestation.json --public-key-file issuer-pubkey.hex
+✗ INVALID | agent://planner-v2 → agent://worker-v3 | CAN_DELETE_ALL(state_store) (TTL 120s)
+    signature: NOT VERIFIED
+    ERROR: Signature does not match payload — attestation may be forged
+$ echo $?
+1
+```
+
+`--public-key-file` takes the issuer's Ed25519 public key as 64 hex characters, which is
+what `public_bytes(Encoding.Raw, PublicFormat.Raw).hex()` produces:
+
+```bash
+# Publish the key (issuer side)
+python -c "import json,serialization; from cryptography.hazmat.primitives.asymmetric import ed25519; \
+print(ed25519.Ed25519PublicKey.from_private_bytes(open('issuer.key','rb').read()).public_bytes( \
+encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw).hex())" > issuer-pubkey.hex
+
+# Consume it (verifier side)
+aca validate attestation.json --public-key-file issuer-pubkey.hex
+```
+
+Both options are accepted by `validate`, `scan`, `check-chain` and `check-mcp`.
+
+### What happens without a key
+
+| attestation | default | `--require-signature` |
+|---|---|---|
+| correctly signed | `signature: VERIFIED`, exit 0 | `VERIFIED`, exit 0 |
+| signed but tampered with | `NOT VERIFIED`, **exit 1** | exit 1 |
+| signed, no trusted key for the issuer | `NOT VERIFIED`, **exit 1** | exit 1 |
+| no signature at all | `UNSIGNED — NOT VERIFIED`, warning, exit 0 | **exit 1** |
+
+The rule is: **a signature that cannot be verified is treated as no evidence at all and
+rejected** — accepting it would reintroduce the hole the signature exists to close. An
+attestation with *no* signature is a different case: it never claimed to be signed, so
+nothing about it was tampered with. It is still reported as unverified, is never printed as
+a bare `✓ VALID`, and `--require-signature` turns it into a hard failure for deployments
+that require signed attestations.
 
 ## Attestation Schema
 
@@ -90,21 +139,33 @@ Widen the window explicitly when a deployment's clock is known to drift. Lowerin
 - name: Validate agent capability attestations
   run: |
     pip install git+https://github.com/yunaremaia/agent-capability-attestation.git
-    aca scan ./agents/ --fail-on-stale
+    aca scan ./agents/ --fail-on-stale --require-signature \
+      --public-key-file ./keys/issuer-pubkey.hex
 ```
 
 ### Pre-delegation Check
 
+`AttestationValidator` takes the trusted public keys so the signature is verified as part
+of validation:
+
 ```python
 from agent_capability_attestation import AttestationValidator
 
-validator = AttestationValidator(max_ttl=300)
+validator = AttestationValidator(
+    max_ttl=300,
+    trusted_keys={"agent://planner-v2": planner_public_key},
+)
 result = validator.validate(attestation)
 
 if result.is_stale:
     raise CapabilityExpiredError(
         f"Attestation expired {result.stale_by_seconds}s ago"
     )
+
+# A signed payload that could not be verified is already invalid; an
+# attestation that never claimed a signature is reported as such.
+if result.signature_status != "verified":
+    raise CapabilityNotAttested(result.signature_status)
 ```
 
 ## Roadmap

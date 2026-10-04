@@ -8,10 +8,15 @@ from pathlib import Path
 from typing import Optional
 
 import click
+from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from .mcp_scanner import check_mcp as scan_mcp_config
 from .models import (
+    ANY_ISSUER,
     DEFAULT_MAX_SKEW_SECONDS,
+    SIGNATURE_UNSIGNED,
+    SIGNATURE_UNVERIFIED,
+    SIGNATURE_VERIFIED,
     Attestation,
     AttestationValidator,
     DelegationChain,
@@ -32,6 +37,27 @@ def cli() -> None:
     """Validate agent capability attestations — detect stale delegation chains."""
 
 
+# Shared signature options. A signed attestation is only trustworthy if its
+# signature is checked against a key the operator actually trusts, so every
+# command that validates an attestation accepts the same two knobs.
+_TRUST_OPTIONS = [
+    click.option(
+        "--public-key-file",
+        type=click.Path(exists=True, dir_okay=False),
+        default=None,
+        help=(
+            "File holding the issuer's Ed25519 public key as 64 hex characters. "
+            "The key is trusted for any issuer it is presented against."
+        ),
+    ),
+    click.option(
+        "--require-signature",
+        is_flag=True,
+        help="Reject attestations that carry no signature (fail closed)",
+    ),
+]
+
+
 @cli.command()
 @click.argument("file", type=click.Path(exists=True))
 @click.option("--max-ttl", default=300, help="Maximum allowed TTL in seconds (default: 300)")
@@ -42,15 +68,22 @@ def cli() -> None:
     help=SKEW_HELP,
 )
 @click.option("--json-output", "json_output", is_flag=True, help="Output as JSON")
+@_TRUST_OPTIONS[0]
+@_TRUST_OPTIONS[1]
 def validate(
-    file: str, max_ttl: int, max_skew_seconds: int, json_output: bool
+    file: str,
+    max_ttl: int,
+    max_skew_seconds: int,
+    json_output: bool,
+    public_key_file: Optional[str],
+    require_signature: bool,
 ) -> None:
     """Validate a single attestation file."""
     data = _load_json(file)
     attestation = Attestation.from_dict(data)
 
-    validator = AttestationValidator(
-        max_ttl=max_ttl, max_skew_seconds=max_skew_seconds
+    validator = _build_validator(
+        max_ttl, max_skew_seconds, public_key_file, require_signature
     )
     result = validator.validate(attestation)
 
@@ -73,12 +106,16 @@ def validate(
 )
 @click.option("--fail-on-stale", is_flag=True, help="Exit 1 if any attestation is stale")
 @click.option("--json-output", "json_output", is_flag=True, help="Output as JSON")
+@_TRUST_OPTIONS[0]
+@_TRUST_OPTIONS[1]
 def scan(
     directory: str,
     max_ttl: int,
     max_skew_seconds: int,
     fail_on_stale: bool,
     json_output: bool,
+    public_key_file: Optional[str],
+    require_signature: bool,
 ) -> None:
     """Scan a directory for attestation files and validate them all."""
     dir_path = Path(directory)
@@ -91,8 +128,8 @@ def scan(
     results = []
     all_valid = True
 
-    validator = AttestationValidator(
-        max_ttl=max_ttl, max_skew_seconds=max_skew_seconds
+    validator = _build_validator(
+        max_ttl, max_skew_seconds, public_key_file, require_signature
     )
 
     for f in attestation_files:
@@ -130,7 +167,15 @@ def scan(
     type=int,
     help=SKEW_HELP,
 )
-def check_chain(file: str, max_ttl: int, max_skew_seconds: int) -> None:
+@_TRUST_OPTIONS[0]
+@_TRUST_OPTIONS[1]
+def check_chain(
+    file: str,
+    max_ttl: int,
+    max_skew_seconds: int,
+    public_key_file: Optional[str],
+    require_signature: bool,
+) -> None:
     """Validate a delegation chain (array of attestations in order)."""
     data = _load_json(file)
 
@@ -140,11 +185,11 @@ def check_chain(file: str, max_ttl: int, max_skew_seconds: int) -> None:
 
     attestations = [Attestation.from_dict(item) for item in data]
     chain = DelegationChain(attestations=attestations)
-    validator = AttestationValidator(
-        max_ttl=max_ttl, max_skew_seconds=max_skew_seconds
+    validator = _build_validator(
+        max_ttl, max_skew_seconds, public_key_file, require_signature
     )
 
-    results = chain.validate_monotonicity()
+    results = chain.validate_monotonicity(validator=validator)
     all_valid = all(r.is_valid for r in results)
 
     for i, result in enumerate(results):
@@ -164,13 +209,25 @@ def check_chain(file: str, max_ttl: int, max_skew_seconds: int) -> None:
     help=SKEW_HELP,
 )
 @click.option("--json-output", "json_output", is_flag=True, help="Output as JSON")
+@_TRUST_OPTIONS[0]
+@_TRUST_OPTIONS[1]
 def check_mcp(
-    file: str, max_ttl: int, max_skew_seconds: int, json_output: bool
+    file: str,
+    max_ttl: int,
+    max_skew_seconds: int,
+    json_output: bool,
+    public_key_file: Optional[str],
+    require_signature: bool,
 ) -> None:
     """Scan an MCP server configuration for capability attestations."""
+    trusted_keys = _load_trusted_keys(public_key_file)
     try:
         results = scan_mcp_config(
-            file, max_ttl=max_ttl, max_skew_seconds=max_skew_seconds
+            file,
+            max_ttl=max_ttl,
+            max_skew_seconds=max_skew_seconds,
+            trusted_keys=trusted_keys,
+            require_signature=require_signature,
         )
     except FileNotFoundError as e:
         click.echo(f"ERROR: {e}", err=True)
@@ -188,6 +245,56 @@ def check_mcp(
     all_valid = all(r.is_valid for r in results)
     if not all_valid:
         sys.exit(1)
+
+
+def _load_trusted_keys(public_key_file: Optional[str]) -> dict:
+    """Load the trusted public key from a hex file, or {} when not given.
+
+    The file holds the raw 32-byte Ed25519 public key as 64 hex characters
+    (optionally ``ed25519:``-prefixed), which is what
+    ``Ed25519PublicKey.public_bytes(Encoding.Raw, PublicFormat.Raw).hex()``
+    produces. Anything else is an operator mistake and exits 2 rather than
+    silently downgrading to "no trusted keys".
+    """
+    if not public_key_file:
+        return {}
+
+    raw = Path(public_key_file).read_text().strip()
+    if raw.startswith("ed25519:"):
+        raw = raw[len("ed25519:"):]
+    try:
+        key_bytes = bytes.fromhex(raw)
+    except ValueError:
+        click.echo(
+            f"ERROR: {public_key_file} is not a hex-encoded Ed25519 public key",
+            err=True,
+        )
+        sys.exit(2)
+
+    if len(key_bytes) != 32:
+        click.echo(
+            f"ERROR: {public_key_file} holds {len(key_bytes)} bytes; "
+            "an Ed25519 public key is 32 bytes (64 hex characters)",
+            err=True,
+        )
+        sys.exit(2)
+
+    return {ANY_ISSUER: ed25519.Ed25519PublicKey.from_public_bytes(key_bytes)}
+
+
+def _build_validator(
+    max_ttl: int,
+    max_skew_seconds: int,
+    public_key_file: Optional[str],
+    require_signature: bool,
+) -> AttestationValidator:
+    """Construct a validator wired to the operator's trust configuration."""
+    return AttestationValidator(
+        max_ttl=max_ttl,
+        max_skew_seconds=max_skew_seconds,
+        trusted_keys=_load_trusted_keys(public_key_file),
+        require_signature=require_signature,
+    )
 
 
 def _load_json(path: str) -> dict:
@@ -213,19 +320,40 @@ def _result_to_dict(result: ValidationResult) -> dict:
         "is_valid": result.is_valid,
         "is_stale": result.is_stale,
         "stale_by_seconds": result.stale_by_seconds,
+        "signature_status": result.signature_status,
         "errors": result.errors,
         "warnings": result.warnings,
     }
 
 
+_SIGNATURE_LABELS = {
+    SIGNATURE_VERIFIED: "VERIFIED",
+    SIGNATURE_UNVERIFIED: "NOT VERIFIED",
+    SIGNATURE_UNSIGNED: "UNSIGNED — NOT VERIFIED",
+}
+
+
 def _print_result(result: ValidationResult) -> None:
-    """Print a validation result to stdout."""
+    """Print a validation result to stdout.
+
+    The signature verdict is always printed, so an attestation nobody could
+    verify is never reported as a bare "✓ VALID" — the operator reading the
+    output (or the CI log) can see exactly what was and was not checked.
+    """
     att = result.attestation
-    status = "✓ VALID" if result.is_valid else "✗ STALE"
+    if result.is_valid:
+        status = "✓ VALID"
+    elif result.is_stale:
+        status = "✗ STALE"
+    else:
+        status = "✗ INVALID"
     click.echo(
         f"{status} | {att.issuer} → {att.subject} | "
         f"{att.capability} (TTL {att.ttl_seconds}s)"
     )
+    label = _SIGNATURE_LABELS.get(result.signature_status)
+    if label:
+        click.echo(f"    signature: {label}")
     if result.stale_by_seconds:
         click.echo(f"    stale by {result.stale_by_seconds:.1f}s")
     for err in result.errors:

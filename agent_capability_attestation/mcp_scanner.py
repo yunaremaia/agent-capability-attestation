@@ -19,10 +19,17 @@ def check_mcp(
     max_ttl: int = 300,
     now: Any = None,
     max_skew_seconds: int = DEFAULT_MAX_SKEW_SECONDS,
+    trusted_keys: Any = None,
+    require_signature: bool = False,
 ) -> list["ValidationResult"]:
     """Scan an MCP server configuration for capability attestations.
 
     Detects when MCP server tool schemas have drifted from their attestations.
+
+    ``trusted_keys`` and ``require_signature`` are forwarded to the validator
+    so a signature check configured by the caller applies to every attestation
+    embedded in the config — without them an MCP attestation could be rewritten
+    to claim a wider tool schema and would still be reported VALID.
     """
     path = Path(config_path)
     if not path.exists():
@@ -31,7 +38,11 @@ def check_mcp(
     data = json.loads(path.read_text())
     results = []
     validator = AttestationValidator(
-        max_ttl=max_ttl, now=now, max_skew_seconds=max_skew_seconds
+        max_ttl=max_ttl,
+        now=now,
+        max_skew_seconds=max_skew_seconds,
+        trusted_keys=trusted_keys,
+        require_signature=require_signature,
     )
 
     # MCP configs can list servers under a "mcpServers" or similar key

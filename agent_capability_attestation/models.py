@@ -6,11 +6,27 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Mapping, Optional
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
+
+#: The attestation's signature was verified against a trusted public key.
+SIGNATURE_VERIFIED = "verified"
+
+#: A signature is present but could not be verified: no trusted key for the
+#: issuer, a malformed signature, or a payload that does not match.
+SIGNATURE_UNVERIFIED = "unverified"
+
+#: The attestation carries no signature at all.
+SIGNATURE_UNSIGNED = "unsigned"
+
+#: No signature check was performed (e.g. a monotonicity-only chain check).
+SIGNATURE_UNCHECKED = "unchecked"
+
+#: Trusted-keys mapping key that applies to every issuer.
+ANY_ISSUER = "*"
 
 # How far into the future an issued_at may sit and still be believable.
 #
@@ -99,6 +115,10 @@ class ValidationResult:
     stale_by_seconds: Optional[float] = None
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    #: One of SIGNATURE_VERIFIED / SIGNATURE_UNVERIFIED / SIGNATURE_UNSIGNED /
+    #: SIGNATURE_UNCHECKED. Callers that gate on capability authority should
+    #: require SIGNATURE_VERIFIED rather than is_valid alone.
+    signature_status: str = SIGNATURE_UNCHECKED
 
     def add_error(self, msg: str) -> None:
         self.errors.append(msg)
@@ -114,8 +134,18 @@ class DelegationChain:
 
     attestations: list[Attestation]
 
-    def validate_monotonicity(self) -> list[ValidationResult]:
-        """Verify each hop narrows (never expands) the capability scope."""
+    def validate_monotonicity(
+        self,
+        validator: Optional["AttestationValidator"] = None,
+    ) -> list[ValidationResult]:
+        """Verify each hop narrows (never expands) the capability scope.
+
+        When a ``validator`` is supplied, its signature check is applied to
+        every hop as well. Scope monotonicity only compares capabilities
+        against each other, so on its own it cannot tell an honest narrowing
+        chain from one whose first hop was rewritten to claim admin rights:
+        a forged payload can be perfectly monotonic and still be a forgery.
+        """
         results: list[ValidationResult] = []
         for i, att in enumerate(self.attestations):
             result = ValidationResult(attestation=att, is_valid=True, is_stale=False)
@@ -126,22 +156,44 @@ class DelegationChain:
                         f"Hop {i}: capability expanded — "
                         f"{parent.capability} → {att.capability}"
                     )
+            if validator is not None:
+                validator.check_signature(att, result)
             results.append(result)
         return results
 
 
 class AttestationValidator:
-    """Validate capability attestations with TTL-based freshness checking."""
+    """Validate capability attestations with TTL and signature checking.
+
+    Args:
+        max_ttl: TTLs above this are reported as a warning, not an error.
+        now: Freeze the validation clock (tests).
+        trusted_keys: Ed25519 public keys keyed by issuer. The special key
+            ``ANY_ISSUER`` ("*") matches any issuer. An attestation carrying a
+            signature whose issuer has no trusted key is **rejected**: an
+            unverifiable signature is not evidence of anything, and accepting
+            it would leave the fail-open hole this check exists to close.
+        require_signature: Reject unsigned attestations outright. Off by
+            default so the documented unsigned workflow keeps working; the
+            verdict is still surfaced as ``signature_status == "unsigned"``
+            plus a warning, so a caller can see what was not checked.
+    """
 
     def __init__(
         self,
         max_ttl: int = 300,
         now: Optional[datetime] = None,
         max_skew_seconds: int = DEFAULT_MAX_SKEW_SECONDS,
+        trusted_keys: Optional[Mapping[str, ed25519.Ed25519PublicKey]] = None,
+        require_signature: bool = False,
     ) -> None:
         self.max_ttl = max_ttl
         self._now = now
         self.max_skew_seconds = max_skew_seconds
+        self.trusted_keys: dict[str, ed25519.Ed25519PublicKey] = dict(
+            trusted_keys or {}
+        )
+        self.require_signature = require_signature
 
     @property
     def now(self) -> datetime:
@@ -150,12 +202,18 @@ class AttestationValidator:
         return datetime.now(timezone.utc)
 
     def validate(self, attestation: Attestation) -> ValidationResult:
-        """Validate a single attestation."""
+        """Validate a single attestation.
+
+        The signature check runs FIRST and always runs, including on the
+        early-return paths below: an unverifiable or forged payload must be
+        reported even when a TTL error would have ended validation anyway.
+        """
         result = ValidationResult(
             attestation=attestation,
             is_valid=True,
             is_stale=False,
         )
+        self.check_signature(attestation, result)
 
         # TTL check (fail closed)
         if attestation.ttl_seconds <= 0 or attestation.expires_at is None:
@@ -214,6 +272,70 @@ class AttestationValidator:
 
         return result
 
+    def check_signature(
+        self,
+        attestation: Attestation,
+        result: ValidationResult,
+    ) -> ValidationResult:
+        """Verify the attestation signature, recording the verdict on ``result``.
+
+        Sets ``result.signature_status`` to one of SIGNATURE_VERIFIED /
+        SIGNATURE_UNVERIFIED / SIGNATURE_UNSIGNED, and adds an error or a
+        warning as follows:
+
+        * signature present and verified  -> verified, no message;
+        * signature present, no trusted key for the issuer, or a mismatch
+          -> unverified, **error** (fail closed: an unverifiable signature is
+          not evidence of authenticity, and silently accepting one is exactly
+          the fail-open hole this closes);
+        * no signature, ``require_signature`` off -> unsigned, warning;
+        * no signature, ``require_signature`` on  -> unsigned, error.
+
+        Callers embedding this into their own result construction (e.g. the
+        delegation-chain check) can reuse it instead of re-implementing the
+        policy.
+        """
+        if not attestation.signature:
+            result.signature_status = SIGNATURE_UNSIGNED
+            if self.require_signature:
+                result.add_error(
+                    "Unsigned attestation and require_signature is enabled "
+                    "(fail closed)"
+                )
+            else:
+                result.add_warning(
+                    "Unsigned attestation — signature not verified; "
+                    "pass trusted_keys to verify it, or require_signature=True "
+                    "to reject unsigned attestations"
+                )
+            return result
+
+        public_key = self._key_for(attestation.issuer)
+        if public_key is None:
+            result.signature_status = SIGNATURE_UNVERIFIED
+            result.add_error(
+                f"No trusted public key for issuer {attestation.issuer!r} — "
+                "signature present but unverifiable (fail closed)"
+            )
+            return result
+
+        if self.verify_signature(attestation, public_key):
+            result.signature_status = SIGNATURE_VERIFIED
+            return result
+
+        result.signature_status = SIGNATURE_UNVERIFIED
+        result.add_error(
+            "Signature does not match payload — attestation may be forged"
+        )
+        return result
+
+    def _key_for(self, issuer: str) -> Optional[ed25519.Ed25519PublicKey]:
+        """Return the trusted key for an issuer, honouring the wildcard."""
+        key = self.trusted_keys.get(issuer)
+        if key is not None:
+            return key
+        return self.trusted_keys.get(ANY_ISSUER)
+
     def verify_signature(
         self,
         attestation: Attestation,
@@ -225,8 +347,16 @@ class AttestationValidator:
         removed, serialized with ``json.dumps``. ``exclude`` is not a
         ``json.dumps`` argument, so the field has to be dropped from the
         dict before serialization.
+
+        Every failure mode returns ``False``: a missing, non-string, odd-length
+        or non-hex signature is bad data, never a reason to raise out of a
+        validation path.
         """
-        if not attestation.signature:
+        if not isinstance(attestation.signature, str):
+            return False
+        try:
+            signature = bytes.fromhex(attestation.signature)
+        except ValueError:
             return False
         body = {
             key: value
@@ -235,11 +365,9 @@ class AttestationValidator:
         }
         try:
             data = json.dumps(body).encode()
-            public_key.verify(
-                bytes.fromhex(attestation.signature), data
-            )
+            public_key.verify(signature, data)
             return True
-        except (InvalidSignature, ValueError):
+        except (InvalidSignature, ValueError, TypeError):
             return False
 
 
