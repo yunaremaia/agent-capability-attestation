@@ -118,6 +118,15 @@ class Attestation:
     expires_at: Optional[datetime] = None
     provenance: list[str] = field(default_factory=list)
     signature: Optional[str] = None
+    #: The document this attestation was parsed from, verbatim. It is the
+    #: signing payload (``from_dict`` is not the inverse of ``to_dict``: the
+    #: round trip injects ``expires_at``, rewrites a ``Z`` offset as
+    #: ``+00:00`` and drops present-but-empty optional fields, so verifying a
+    #: re-serialized model would reject every wire-format attestation written
+    #: to the documented schema). ``None`` for an attestation built
+    #: programmatically, where the model is the only description of the
+    #: payload. Excluded from ``to_dict()``, equality and ``repr``.
+    _raw: Optional[dict] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.expires_at is None and self.ttl_seconds is not None:
@@ -160,7 +169,27 @@ class Attestation:
             ),
             provenance=data.get("provenance", []),
             signature=data.get("signature"),
+            _raw=dict(data),
         )
+
+    def signing_body(self) -> dict:
+        """The payload a signature is computed over: the document minus ``signature``.
+
+        For an attestation parsed from a document (``from_dict``) that document
+        *is* the payload — verbatim, key for key, exactly as the issuer wrote
+        it. Re-serializing the model instead would change the bytes: the round
+        trip injects ``expires_at`` when the document omitted it, re-emits both
+        timestamps via ``.isoformat()`` (``Z`` becomes ``+00:00``), and drops
+        optional fields that are present but empty. Verifying those bytes
+        rejected every attestation following the documented schema and
+        reported it as forged.
+
+        An attestation built programmatically has no document, so its
+        ``to_dict()`` is the only description of the payload it can verify.
+        """
+        if self._raw is not None:
+            return {k: v for k, v in self._raw.items() if k != "signature"}
+        return {k: v for k, v in self.to_dict().items() if k != "signature"}
 
     def to_dict(self) -> dict:
         """Serialize to a JSON-compatible dictionary."""
@@ -491,11 +520,13 @@ class AttestationValidator:
     ) -> bool:
         """Verify the Ed25519 signature of an attestation.
 
-        The signed payload is ``to_dict()`` with the ``signature`` key
-        removed, serialized with :func:`canonical_bytes`. The signature is
-        computed over exactly those bytes, so an issuer that reproduces the
-        documented canonical form (sorted keys, compact separators, UTF-8)
-        verifies regardless of the JSON encoder it used.
+        The signed payload is the attestation document minus the ``signature``
+        key (see :meth:`Attestation.signing_body`), serialized with
+        :func:`canonical_bytes`. The signature is computed over exactly those
+        bytes, so an issuer that reproduces the documented canonical form
+        (sorted keys, compact separators, UTF-8) verifies regardless of the
+        JSON encoder it used — and regardless of which optional fields its
+        document carried or how it spelled its timestamps.
 
         ``signature`` arrives from a file the attacker can edit, so a verifier
         that answers a yes/no question has to be total over that input: every
@@ -512,13 +543,11 @@ class AttestationValidator:
             return False
         if signature.startswith(ED25519_SIGNATURE_PREFIX):
             signature = signature[len(ED25519_SIGNATURE_PREFIX):]
-        body = {
-            key: value
-            for key, value in attestation.to_dict().items()
-            if key != "signature"
-        }
         try:
-            public_key.verify(bytes.fromhex(signature), canonical_bytes(body))
+            public_key.verify(
+                bytes.fromhex(signature),
+                canonical_bytes(attestation.signing_body()),
+            )
             return True
         except (InvalidSignature, ValueError, TypeError):
             # TypeError is retained alongside the isinstance() guard on

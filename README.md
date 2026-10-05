@@ -184,7 +184,12 @@ That same error is what an issuer sees when they sign the *right* payload the *w
 the bytes are worth stating exactly rather than leaving to be inferred. The signature covers
 the canonical serialization of every field except `signature` — **keys sorted, no
 insignificant whitespace, UTF-8** — which is the byte string `canonical_bytes()` produces. It
-is exported from the package so an issuer signs precisely what the verifier hashes:
+is exported from the package so an issuer signs precisely what the verifier hashes.
+
+The payload is **the attestation document itself**, as written — the verifier hashes the
+document it read, field for field. A `Z` timestamp stays a `Z` timestamp, an omitted optional
+`expires_at` stays omitted, and a present-but-empty `"provenance": []` is still covered. An
+issuer therefore signs the exact object it writes to disk:
 
 ```python
 from agent_capability_attestation import canonical_bytes
@@ -263,6 +268,23 @@ that require signed attestations.
 
 `aca scan` exits `1` as soon as any attestation is invalid, so the gate needs no
 extra flag; `--report-only` is the opt-out for a non-blocking report.
+
+It also exits `1` when it finds **no** attestations at all. A gate that opened
+nothing has validated nothing, and reporting that as a clean run is how a
+directory full of forged or expired attestations goes unnoticed.
+
+### What `aca scan` considers an attestation
+
+`scan` walks the given directory recursively and accepts every `*.json` file
+whose contents are an attestation document — a JSON object carrying the required
+`issuer`, `subject`, `capability` and `issued_at` fields. Filenames are not
+required: `attestation.json` (the name above), `agent-a.json` and
+`valid-attestation.json` are all picked up, and an unrelated `config.json`
+sitting in the same tree is ignored rather than reported as a bad attestation.
+
+The one exception is a file named `*.attestation.json`: that suffix is an
+explicit claim to be an attestation, so the file is always read, and if it turns
+out to be malformed it is reported as unreadable instead of skipped.
 
 ### Pre-delegation Check
 

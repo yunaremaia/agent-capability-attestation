@@ -165,11 +165,19 @@ class TestScanExitCode:
 
         assert result.exit_code == 1, result.output
 
-    def test_empty_directory_still_exits_zero(self, tmp_path):
-        """Nothing to scan is not a failure — unchanged by this fix."""
+    def test_empty_directory_exits_one(self, tmp_path):
+        """A directory holding nothing to validate is not a clean run.
+
+        This asserted ``0`` once, which is the #31/#46 vacuous-pass class: a CI
+        gate pointed at the wrong directory — or one whose filenames did not
+        match a hardcoded ``*.attestation.json`` glob — passed green having
+        inspected nothing. Finding no attestations now fails closed, the same
+        way ``check-chain`` and ``check-mcp`` do.
+        """
         result = CliRunner().invoke(cli, ["scan", str(tmp_path)])
 
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
+        assert "nothing was validated" in result.output, result.output
 
     def test_report_only_forces_exit_zero_and_still_prints_the_verdict(
         self, tmp_path

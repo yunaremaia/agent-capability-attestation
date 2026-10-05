@@ -15,6 +15,7 @@ from .mcp_scanner import check_mcp as scan_mcp_config
 from .models import (
     ANY_ISSUER,
     DEFAULT_MAX_SKEW_SECONDS,
+    REQUIRED_FIELDS,
     SIGNATURE_UNCHECKED,
     SIGNATURE_UNSIGNED,
     SIGNATURE_UNVERIFIED,
@@ -116,6 +117,35 @@ def validate(
     sys.exit(0 if result.is_valid else 1)
 
 
+def _discover_attestations(dir_path: Path) -> list[Path]:
+    """Every attestation document under ``dir_path``, at any depth.
+
+    The filename is not the acceptance rule. A file counts when it is a
+    ``.json`` file *and* it parses as a JSON object carrying the required
+    attestation fields — so ``attestation.json`` (the README's Quick Start
+    name), ``agent-a.json`` and ``valid-attestation.json`` are all found, and a
+    neighbouring ``config.json`` in the same tree is not mistaken for one.
+
+    The one exception is a file named ``*.attestation.json``: that suffix is an
+    explicit claim to be an attestation, so such a file is always returned even
+    if it turns out to be malformed — the scan loop reports it as unreadable
+    rather than silently skipping it, which is the #30/#44 undercount this
+    replaces.
+    """
+    found: list[Path] = []
+    for path in sorted(dir_path.glob("**/*.json")):
+        if path.name.endswith(".attestation.json"):
+            found.append(path)
+            continue
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and all(f in data for f in REQUIRED_FIELDS):
+            found.append(path)
+    return found
+
+
 @cli.command()
 @click.argument("directory", type=click.Path(exists=True, file_okay=False))
 @click.option("--max-ttl", default=300, help="Maximum allowed TTL in seconds")
@@ -171,11 +201,22 @@ def scan(
         sys.exit(2)
 
     dir_path = Path(directory)
-    attestation_files = sorted(dir_path.glob("**/*.attestation.json"))
+    attestation_files = _discover_attestations(dir_path)
 
     if not attestation_files:
-        click.echo(f"No .attestation.json files found in {directory}")
-        sys.exit(0)
+        # A gate that opened nothing has not validated anything, so it must not
+        # exit 0: `No .attestation.json files found` over a directory of
+        # perfectly good attestations named any other way was indistinguishable
+        # from a clean run. ``--json-output`` still gets parseable JSON.
+        message = (
+            f"no attestations found in {directory} — nothing was validated. "
+            "Accepted: any *.json file holding an attestation document "
+            "(issuer, subject, capability, issued_at), at any depth."
+        )
+        if json_output:
+            click.echo(json.dumps([], indent=2))
+        click.echo(f"ERROR: {message}", err=True)
+        sys.exit(1)
 
     results = []
     # Files that could not be read at all (bad JSON, or a malformed attestation
