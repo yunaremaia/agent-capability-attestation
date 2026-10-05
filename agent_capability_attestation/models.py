@@ -646,25 +646,41 @@ def _parse_datetime(value) -> datetime:
     raise ValueError(f"Cannot parse datetime: {value!r}")
 
 
+def _split_capability(cap: str) -> tuple[str, str]:
+    """Split a capability into (verb, resource), removing ONE matched paren pair.
+
+    ``CAN_WRITE(store:*)`` -> ``("CAN_WRITE", "store:*")``; a bare scope such as
+    ``store:read`` -> ``("", "store:read")``. ``str.strip("()")`` would also eat
+    the unbalanced ``)`` of ``store:*`` and leave a bare ``*``.
+    """
+    verb, sep, rest = cap.partition("(")
+    if sep and rest.endswith(")"):
+        return verb, rest[:-1]
+    return "", cap
+
+
 def _scope_is_subscope(parent: str, child: str) -> bool:
     """Check if child capability is a subscope of parent capability.
 
-    Supports wildcards: "store:*" matches any child starting with "store:".
+    A wildcard grants inside its own resource namespace only:
+    ``CAN_WRITE(store:*)`` covers ``CAN_WRITE(store:read)``, never
+    ``CAN_WRITE(other:admin)``, and never a different verb.
     """
+    if not parent or not child:
+        return False
     if child == parent:
         return True
-    # Handle wildcard suffix
-    if parent.endswith("*"):
-        wildcard_prefix = parent[:-1]
-        return child.startswith(wildcard_prefix)
+    p_verb, p_res = _split_capability(parent)
+    c_verb, c_res = _split_capability(child)
+    if p_verb and c_verb and p_verb != c_verb:
+        return False
+    # Wildcard, bounded by its own prefix so the namespace cannot be crossed.
+    if p_res.endswith("*"):
+        return c_res.startswith(p_res[:-1])
     # Direct prefix match
-    if child.startswith(parent):
+    if c_res.startswith(p_res):
         return True
-    # Check if child's scope is a subset of parent's
-    parent_scope = parent.split(":")[-1] if ":" in parent else parent
-    child_scope = child.split(":")[-1] if ":" in child else child
-    parent_parts = set(parent_scope.strip("()").split(","))
-    child_parts = set(child_scope.strip("()").split(","))
-    if parent_parts == {"*"}:
-        return True
-    return child_parts.issubset(parent_parts)
+    # Check if child's scope is a subset of parent's, within the same namespace.
+    p_ns, _, p_seg = p_res.rpartition(":")
+    c_ns, _, c_seg = c_res.rpartition(":")
+    return p_ns == c_ns and set(c_seg.split(",")) <= set(p_seg.split(","))

@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- `check-chain` no longer reports a capability expansion out of the parent
+  resource namespace as monotonic. The scope-subset check compared only the last
+  `:`-segment and normalised it with `str.strip("()")`, which removes a character
+  set rather than a matched pair — so the documented form `CAN_WRITE(store:*)`
+  collapsed to a bare `*` and matched *any* child. `CAN_WRITE(store:*)` ->
+  `CAN_WRITE(other:admin)` is now `Hop N: capability expanded`, exit `1`.
+
 ## [0.1.0] - 2026-10-05
 
 ### Added
