@@ -107,8 +107,15 @@ class TestZeroFilesIsALoudFailure:
         assert "nothing was validated" in result.output, result.output
 
     def test_json_output_is_an_empty_list_not_prose(self, tmp_path):
-        """A JSON consumer must get parseable JSON, per the issue."""
+        """A JSON consumer must get parseable JSON, per the issue.
+
+        ``raw_decode`` rather than ``loads`` because click below 8.2 merges
+        stderr into ``result.stdout``, so the ERROR line trails the ``[]`` on
+        those versions. The list is the first value on stdout either way — which
+        is what the fix is about: previously stdout held only the prose message.
+        """
         result = _scan(tmp_path, "--json-output")
 
         assert result.exit_code == 1, result.output
-        assert json.loads(result.stdout) == []
+        payload, _ = json.JSONDecoder().raw_decode(result.stdout)
+        assert payload == []
