@@ -130,4 +130,6 @@ class TestCheckMcp:
         result = CliRunner().invoke(cli, ["check-mcp", str(path)])
 
         assert result.exit_code == 1, result.output
-        assert "Missing TTL" in result.output
+        # The server is still flagged (fail closed), but the verdict names
+        # *absence* rather than borrowing the stale branch — see #20.
+        assert "UNATTESTED" in result.output

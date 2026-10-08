@@ -24,9 +24,18 @@ When Agent A delegates a task to Agent B, the capability attestation that author
 4. **Delegate monotonically** — each hop in a delegation chain must narrow (never expand) the scope
 5. **Fail closed** — missing TTL = expired attestation (assume stale unless freshly attested),
    and a life longer than the configured `--max-ttl` ceiling is rejected rather than noted
+6. **Detect drift** — `aca check-mcp` hashes an MCP server's declared surface
+   (`command`/`args`/`tools`) and rejects an attestation whose `state_hash` no longer
+   matches it; an attestation that carries no `state_hash` warns that drift could not be
+   checked rather than passing silently
 
-`state_hash` is carried in the schema and covered by the signature, but nothing compares it to a
-live agent state yet — see the roadmap below.
+`aca check-mcp` also separates three verdicts it used to conflate: an **unattested** server
+(`status="unattested"`), one whose attestation **expired** (`status="expired"`), and one whose
+declared surface **drifted** from a still-fresh attestation (`status="drifted"`). The three need
+different remediation, so they are reported — and counted — separately.
+
+`state_hash` is compared against the surface the config *declares*, not against a live
+agent state yet — the live comparison is still on the roadmap below.
 
 ## Installation
 
@@ -315,6 +324,7 @@ if result.signature_status != "verified":
 
 - [ ] A2A protocol integration (validate Agent Card capability declarations)
 - [x] MCP server capability scanning (`aca check-mcp`)
+- [x] Compare `state_hash` against an MCP server's declared surface
 - [ ] Compare `state_hash` against a live agent state
 - [ ] Delegation chain visualization
 - [ ] SARIF output for GitHub Code Scanning

@@ -20,6 +20,10 @@ from .models import (
     SIGNATURE_UNSIGNED,
     SIGNATURE_UNVERIFIED,
     SIGNATURE_VERIFIED,
+    STATUS_DRIFTED,
+    STATUS_EXPIRED,
+    STATUS_INVALID,
+    STATUS_UNATTESTED,
     Attestation,
     AttestationValidator,
     DelegationChain,
@@ -506,6 +510,7 @@ def _result_to_dict(result: ValidationResult) -> dict:
         "capability": result.attestation.capability,
         "is_valid": result.is_valid,
         "is_stale": result.is_stale,
+        "status": result.status,
         "stale_by_seconds": result.stale_by_seconds,
         "signature_status": result.signature_status,
         "errors": result.errors,
@@ -519,6 +524,16 @@ _SIGNATURE_LABELS = {
     SIGNATURE_UNSIGNED: "UNSIGNED — NOT VERIFIED",
 }
 
+# One label per non-valid verdict class. Reading the class rather than the two
+# booleans is what lets "never attested" and "attested, then drifted" print as
+# themselves instead of both collapsing into "✗ STALE" or "✗ INVALID" (#20).
+_VERDICT_LABELS = {
+    STATUS_UNATTESTED: "✗ UNATTESTED",
+    STATUS_EXPIRED: "✗ STALE",
+    STATUS_DRIFTED: "✗ DRIFTED",
+    STATUS_INVALID: "✗ INVALID",
+}
+
 
 def _print_result(result: ValidationResult) -> None:
     """Print a validation result to stdout.
@@ -530,10 +545,8 @@ def _print_result(result: ValidationResult) -> None:
     att = result.attestation
     if result.is_valid:
         status = "✓ VALID"
-    elif result.is_stale:
-        status = "✗ STALE"
     else:
-        status = "✗ INVALID"
+        status = _VERDICT_LABELS.get(result.status, "✗ INVALID")
     click.echo(
         f"{status} | {att.issuer} → {att.subject} | "
         f"{att.capability} (TTL {att.ttl_seconds}s)"

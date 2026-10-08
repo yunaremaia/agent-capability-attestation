@@ -27,6 +27,43 @@ SIGNATURE_UNCHECKED = "unchecked"
 #: Trusted-keys mapping key that applies to every issuer.
 ANY_ISSUER = "*"
 
+# The verdict *class* of a ``ValidationResult``.
+#
+# ``is_valid`` and ``is_stale`` alone could not express every state a scan
+# reaches. "This server carries no attestation at all" had nowhere to live: the
+# MCP scanner encoded absence as a synthetic attestation dated 2020-01-01 with
+# ``ttl_seconds=0``, which ``validate`` folds into exactly the branch a genuinely
+# expired attestation takes — so an unattested MCP server and one whose
+# attestation expired three years ago were reported identically
+# (``is_valid=False, is_stale=True``), and any consumer counting stale
+# attestations counted unattested servers among them. Drift is the second state
+# the pair cannot name: a fresh, well-formed attestation whose subject has since
+# changed is ``is_valid=False, is_stale=False``, indistinguishable from any other
+# non-staleness error. ``status`` carries both distinctions. It never changes what
+# the booleans mean where they are already right — an unattested server is still
+# invalid and still fail-closed — it only names the class.
+#
+#: Nothing was wrong, or the ``is_stale`` / ``is_valid`` pair already says it.
+STATUS_OK = "ok"
+
+#: No attestation is present at all. Not a staleness verdict: nothing was
+#: examined, because there was nothing to examine. Pairs with ``is_stale=None``.
+STATUS_UNATTESTED = "unattested"
+
+#: An attestation is present but no longer fresh.
+STATUS_EXPIRED = "expired"
+
+#: An attestation is present and fresh, but the surface it attests to no longer
+#: matches it — the MCP server's ``command``/``args``/``tools`` hash to a
+#: different ``state_hash`` than the one the attestation carries. The
+#: attestation itself is well formed; what moved is the thing it was issued for.
+STATUS_DRIFTED = "drifted"
+
+#: An attestation is present, fresh, and still fails a check (a forged or
+#: unverifiable signature, a future ``issued_at``, an ``expires_at`` that
+#: outlives its TTL, a TTL above the operator's ceiling).
+STATUS_INVALID = "invalid"
+
 # How far into the future an issued_at may sit and still be believable.
 #
 # A negative age (issued_at ahead of now) used to pass every check, which made
@@ -379,7 +416,12 @@ class ValidationResult:
 
     attestation: Attestation
     is_valid: bool
-    is_stale: bool
+    #: ``True`` when an attestation is present but no longer fresh, ``False``
+    #: when it is present and current, and ``None`` when there is no attestation
+    #: to judge at all. The third value exists because absence is not expiry: a
+    #: consumer that counts stale attestations must not count a server that was
+    #: never attested among them (see ``STATUS_UNATTESTED``).
+    is_stale: Optional[bool]
     stale_by_seconds: Optional[float] = None
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -387,6 +429,14 @@ class ValidationResult:
     #: SIGNATURE_UNCHECKED. Callers that gate on capability authority should
     #: require SIGNATURE_VERIFIED rather than is_valid alone.
     signature_status: str = SIGNATURE_UNCHECKED
+    #: One of STATUS_OK / STATUS_UNATTESTED / STATUS_EXPIRED / STATUS_DRIFTED /
+    #: STATUS_INVALID — the verdict class, for the distinction the ``is_valid``
+    #: and ``is_stale`` pair cannot carry (see the STATUS_* block).
+    #: ``STATUS_UNATTESTED`` and ``STATUS_DRIFTED`` are the two a caller cannot
+    #: reconstruct from the booleans: both are ``is_valid=False``, and the first
+    #: is ``is_stale=None`` while the second is a fresh-but-mismatched
+    #: attestation that the TTL check alone reports as ``is_stale=False``.
+    status: str = STATUS_OK
 
     def add_error(self, msg: str) -> None:
         self.errors.append(msg)
@@ -537,6 +587,7 @@ class AttestationValidator:
         if attestation.ttl_seconds <= 0 or attestation.expires_at is None:
             result.add_error("Missing TTL — attestation considered expired (fail closed)")
             result.is_stale = True
+            result.status = STATUS_EXPIRED
             return result
 
         # A declared expires_at may shorten an attestation's life but never
@@ -568,6 +619,7 @@ class AttestationValidator:
                 f"(allowed skew {self.max_skew_seconds}s) — "
                 "forged or clock-skewed issued_at"
             )
+            result.status = STATUS_INVALID
             return result
 
         # Construction computes this same sum unconditionally (#53), so a
@@ -583,6 +635,7 @@ class AttestationValidator:
             ttl_deadline = _deadline(issued_at, attestation.ttl_seconds)
         except ValueError as exc:
             result.add_error(f"{exc} — rejecting")
+            result.status = STATUS_INVALID
             return result
         if deadline > ttl_deadline:
             result.add_error(
@@ -647,6 +700,16 @@ class AttestationValidator:
                 f"Attestation stale by {result.stale_by_seconds:.1f}s "
                 f"(issued {age:.1f}s ago, expires {deadline.isoformat()})"
             )
+
+        # The verdict class, for the paths that reach here rather than returning
+        # early. ``is_stale`` wins the label because a stale attestation is also
+        # (correctly) invalid, and the staleness is the actionable half.
+        if result.is_stale:
+            result.status = STATUS_EXPIRED
+        elif not result.is_valid:
+            result.status = STATUS_INVALID
+        else:
+            result.status = STATUS_OK
 
         return result
 
